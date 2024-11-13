@@ -8,7 +8,9 @@ import multiprocessing
 import platform
 import signal
 import tempfile
-
+from .utils import check_transformed
+import re
+import inspect
 
 def check_correctness(problem: Dict, completion: str, timeout: float,
                       completion_id: Optional[int] = None) -> Dict:
@@ -35,28 +37,36 @@ def check_correctness(problem: Dict, completion: str, timeout: float,
             reliability_guard()
 
             # Construct the check program and run it.
-            check_program = (
+
+            #remove the comments because it's handled as a test => avoid assertion failure
+            prompt = re.sub(r'("""(.*?)"""|\'\'\'(.*?)\'\'\')', '', problem["prompt"], flags=re.DOTALL)
+
+            """check_program = (
                 problem["prompt"] + completion + "\n" +
                 problem["test"] + "\n" +
                 f"check({problem['entry_point']})"
+            )"""
+
+            check_program = (
+                    # function to test
+                    prompt + completion + "\n" +
+                    # code source of check function after being transformed to report all failing assertions
+                    inspect.getsource(check_transformed) + "\n" +
+                    # call to check transformed
+                    f'failing_tests = check_transformed("""{problem["test"]}""",{problem["entry_point"]})'
             )
 
             try:
                 exec_globals = {}
                 with swallow_io():
                     with time_limit(timeout):
-# WARNING
-# This program exists to execute untrusted model-generated code. Although
-# it is highly unlikely that model-generated code will do something overtly
-# malicious in response to this test suite, model-generated code may act
-# destructively due to a lack of model capability or alignment.
-# Users are strongly encouraged to sandbox this evaluation suite so that it 
-# does not perform destructive actions on their host or network. For more 
-# information on how OpenAI sandboxes its code, see the accompanying paper.
-# Once you have read this disclaimer and taken appropriate precautions, 
-# uncomment the following line and proceed at your own risk:
-#                         exec(check_program, exec_globals)
-                result.append("passed")
+
+                         exec(check_program, exec_globals)
+                         check_result = exec_globals.get('failing_tests', [])
+                         if len(check_result) == 0 :
+                             result.append("passed")
+                         else :
+                            result.append(f"failing tests: {check_result}")
             except TimeoutException:
                 result.append("timed out")
             except BaseException as e:
